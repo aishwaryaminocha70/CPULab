@@ -1,330 +1,363 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <sys/types.h>
-#include <sys/wait.h>
-#include <unistd.h>
-#include <errno.h>
-#include <string.h>
-#include <pthread.h>
+#include <ctype.h>
+#include <time.h>
 
-#define BUFFER_MAX_LENGTH 1024
-#define USER_SIZE 10
+typedef struct processes Process;
+typedef struct queue Queue;
+typedef struct cpu CPU;
+unsigned time_quantum;
 
-/**
- * Main fcfs function
-*/
-int fcfs(char **arr_fcfs, int pCounter, FILE *new_file)
-{
-    int finalTime = 0;
-    int totalTime = 0;
-    fprintf(new_file, "Order of selection by CPU:  \n");
-    // Print the order selected by the CPU as-is
-    for (int i = 0; i < pCounter; i++) 
-    {
-        fprintf(new_file, "P%d ", i+1);
-    }
-    fprintf(new_file, "\n\nIndividual waiting times for each process: \n");
-    // Loop through the array to calculate each process time
-    for (int j = 0; j < pCounter; j++) 
-    {
-        fprintf(new_file, "P%d = %d\n", j+1, finalTime);
-        finalTime = finalTime + atoi(arr_fcfs[j]);
-        totalTime = totalTime + finalTime;
-    }
-    // Calculate total time needed for average time
-    totalTime = totalTime - finalTime;
-    fprintf(new_file, "\nAverage waiting time = %0.1f \n\n", (double)totalTime/pCounter);
-    return 0;
+void delay(int ms);
+void read_csv(Queue *q, char *file);
+void enqueue(Queue *q, Process *p);
+void dequeue(Queue *q, CPU *processor, time_t *exec_time);
+void getCurrentState(Queue *q);
+void start_scheduler(CPU *cpu, Queue *q, unsigned *tq);
+void calculate_process_info(Process *p, int *exec_time);
+void analysis(CPU *unit, Queue *ready_queue);
+
+double cpu_maximum_utilization(CPU *cpu);
+int check_current_size(Queue *q);
+int compute_burst_time(Process *p, unsigned *tq);
+Process *process_pids(unsigned *pid, unsigned *arrival, unsigned *burst);
+
+//--------------------------------------------------------------------------------------------------
+/* Structures:
+ * 	- Process
+ * 	- Queue
+ *  - CPU */
+//--------------------------------------------------------------------------------------------------
+
+typedef struct processes {
+   unsigned pid;
+   unsigned arrival_time;
+   unsigned burst_time;
+   unsigned waiting_time;
+   unsigned completion_time;
+   unsigned turnaround_time;
+   unsigned context_switch_count;
+} Process;
+
+typedef struct queue {
+    Process *arr[4];	// Pointer to the array as we don't know what array we're specifying
+    int front;
+    int rear;
+    size_t original_size, current_size;
+} Queue;
+
+typedef struct cpu{
+	unsigned total_waiting_time;
+	unsigned total_completion_time;
+	unsigned total_context_switches;
+	time_t total_time_running, idle_time;
+} CPU;
+
+//--------------------------------------------------------------------------------------------------
+// Process Methods
+//--------------------------------------------------------------------------------------------------
+
+// Prints out the completion time, turnaround time, and waiting time for the process.
+void calculate_process_info(Process *p, int *exec_time) {
+	
+	// Calculate Turnaround time & Waiting time
+	p->turnaround_time = *exec_time - p->arrival_time;
+	//printf("Exec time: %d and Arrival Time %d\n", *exec_time, p->arrival_time);
+	p->waiting_time = p->turnaround_time - p->completion_time;
+		
+	printf("Process Completion Time: %ds\nProcess Waiting Time: %ds\nProcess Turnaround time: %ds\n"
+	"Removing from queue\n\n", p->completion_time, p->waiting_time, p->turnaround_time);
 }
 
-
-/**
- * A struct that defines two variables for the original value and their index
-*/
-struct sjf_struct
-{
-    int value;
-    int index;
-};
-
-/**
- * A helper function for sjf, compare two pointers and set return accordingly
-*/
-int sjf_cmp(const void *a, const void *b)
-{
-    struct sjf_struct *a1 = (struct sjf_struct *)a;
-    struct sjf_struct *a2 = (struct sjf_struct *)b;
-    // Compare the first value to the second value
-    if ((*a1).value < (*a2).value)
-        // Return -1 if the first value is smaller than the second value
-        return -1;
-    else if ((*a1).value > (*a2).value)
-        // Return 1 if the first value is larger than the second value
-        return 1;
-    else
-        // Return 0 if the first value is equal to the second value
-        return 0;
+//--------------------------------------------------------------------------------------------------
+// CPU Methods
+//--------------------------------------------------------------------------------------------------
+double cpu_maximum_utilization(CPU *unit) {
+	printf("Unit idle time:%.2fs\n", (double) unit->idle_time);
+	return ((double) (unit->total_time_running - unit->idle_time) / (double) (unit->total_time_running)) * 100;
 }
 
-/**
- * Main sjf function, using qsort() to sort the array elements in ascending order
-*/
-int sjf(char **arr_sjf, int pCounter, FILE *new_file)
-{
-    int temp;
-    int finalTime = 0;
-    int totalTime = 0;
-    int localArray [pCounter];
-    struct sjf_struct objects[pCounter];
-    // Preserve arr_sjf's original elements' index and value
-    for (int i = 0; i < pCounter; i++)
-    {
-        objects[i].value = atoi(arr_sjf[i]);
-        objects[i].index = i;
-    }
-    // Copy the elements from the original array to a local array to avoid overwriting
-    for (int i = 0; i < pCounter; i++)
-    {
-        localArray[i] = atoi(arr_sjf[i]);
-    }
-    // Sort the array into ascending order
-    qsort(objects, pCounter, sizeof(objects[0]), sjf_cmp);
-    fprintf(new_file, "Order of selection by CPU:  \n");
-    // Loop through the whole array and print the order selected by CPU
-    for (int i = 0; i < pCounter; i++)
-    {
-        fprintf(new_file,      "P%d ", objects[i].index + 1); //will give 1 2 0
-    }
-    fprintf(new_file, "\n\nIndividual waiting times for each process:   \n");
-    // Print individual waiting time in the order of selected by the CPU
-    for (int i = 0; i < pCounter; i++)
-    {
-        for (int j = i + 1; j < pCounter; j++)
-        {
-            // Sort the local array in ascending order
-            if (localArray[i] > localArray[j])
-            {
-                temp = localArray[i];
-                localArray[i] = localArray[j];
-                localArray[j] = temp;
-            }
-        }
-        fprintf(new_file, "P%d = %d\n", objects[i].index + 1, finalTime);
-        finalTime = finalTime + localArray[i];
-        totalTime = totalTime + finalTime;
-    }
-    // Calculate total time needed for average time
-    totalTime = totalTime - finalTime;
-    fprintf(new_file, "\nAverage waiting time = %0.1f \n\n", (double)totalTime/pCounter);
-    return 0;
+//--------------------------------------------------------------------------------------------------
+/* Queue methods
+ * - Check current size of queue
+ * - Enqueue
+ * - Dequeue
+ * - Get current state of queue 
+ * - Sort queue in ascending order based off of arrival time*/
+//--------------------------------------------------------------------------------------------------
+
+// This function returns amount of items currently in the ready queue
+// @returns queue size
+int check_current_size(Queue *q) {
+    return q->current_size;
 }
 
-
-/**
- * Main rr function
-*/
-int rr(char **arr_rr, int pCounter, int tq, FILE *new_file)
-{
-    int pos = 0;
-    int finished = 0; 
-    int currentTime = 0;
-    int processNum = pCounter;
-    int localArr [pCounter];
-    int checkArr [pCounter];
-    int startTimeArr [pCounter];
-    int finalPosArray [pCounter];
-    int taArr [pCounter];
-    // Initialize all arrays
-    for (int i = 0; i < pCounter; i++)
-    {
-        localArr[i] = atoi(arr_rr[i]);
-        checkArr[i] = 0;
-        startTimeArr[i] = 0;
-        finalPosArray[i] = 0;
-        taArr [pCounter] = 0;
-    }
-    fprintf(new_file, "Order of selection by CPU \n");
-    // Main while loop, keep execute until finish condition reaches
-    while (finished == 0)
-    { 
-        // Here, process one array at a time
-        for (int i = 0; i < pCounter; i++)
-        { 
-            // Prints out the order selected by CPU
-            if (localArr[i] > 0)
-            {
-                fprintf(new_file, "P%d ", i+1);
-            }
-            // Check to make sure that the remaining CPU burst time is not 0
-            if (localArr[i] != 0)
-            {
-                // Check if the remaining CPU burst time is greater than time quantum
-                if (localArr[i] > tq)
-                {   
-                    // Check to see if it has never been visited
-                    if (checkArr[i] == 0)
-                    {
-                        // If never been visited, set start time
-                        startTimeArr[i] = currentTime; 
-                        // Set visited by changing 0 to 1 in the checkArr
-                        checkArr[i] = 1;
-                    }    
-                    // Increment the current time by tq        
-                    currentTime += tq; 
-                    // Decrement the CPU burst time remaining by tq
-                    localArr[i] -= tq;
-                }
-                // Check if the remaining CPU burst time is greater than time quantum
-                else
-                {
-                    // Check if the remaining CPU burst time is greater than time quantum
-                    if (checkArr[i] == 0)
-                    {
-                        // If never been visited, set start time
-                        startTimeArr[i] = currentTime; 
-                        // Set visited by changing 0 to 1 in the checkArr
-                        checkArr[i] = 1;
-                    }    
-                    // Increment the current time by the rest of CPU burst time                
-                    currentTime += localArr[i]; 
-                    // Store the process number to the corresponding index position in the finalPosArray
-                    finalPosArray[pos] = i + 1;
-                    // Store the turnaround time to the corresponding index position in the taArr
-                    taArr[pos] = currentTime - startTimeArr[i];
-                    // Set remaining CPU burst time to 0
-                    localArr[i] = 0;
-                    // Increment the position in the finalPosArr by 1
-                    pos ++;
-                }
-            }
-            // Initialize a flag variable
-            int flag = 0;
-            // Loop to check if we finished all processes
-            for (int j = 0; j < pCounter; j++)
-            {  
-                // Check for any remaining CPU burst time that are not 0
-                if(localArr[j] != 0)
-                {
-                    // Set flag to 1 (not finished) if there are any
-                    flag = 1;
-                }
-            }
-            // Terminates the while loop if flags are 0
-            if (flag == 0)
-            {
-                finished = 1;
-            }
-        }
-    }
-    fprintf(new_file, "\n\n");
-    // Print out the order of processes and their corresponding turnaround times
-    for (int i = 0; i < pCounter; i++)
-    {
-        fprintf(new_file, "P%d = %d\n", finalPosArray[i], taArr[i]);
-    }
-    fprintf(new_file, "\n");
-    return 0;
+// This functions adds incoming processes or already processed process into queue
+void enqueue(Queue *q, Process *process) {
+	size_t size = sizeof(q->arr)/sizeof(q->arr[0]);
+	unsigned currentSize = check_current_size(q);
+   
+	if (q->arr[currentSize] == NULL && currentSize < size) {
+	   q->arr[currentSize] = process;
+	   q->current_size++;
+	}
+	q->original_size = size;
 }
 
+// This function either: 
+// Shift processes in array by 1 and move front process to the end if process is not null OR
+// Dequeues process if process' burst time is zero
+// Problems: Does not make it null
+void dequeue(Queue *q, CPU *processor, time_t *start_exec) {
+	q->front = 0;
+	q->rear = q->current_size-1;
+	Process *tempProcess = q->arr[q->front]; 
+	time_t start, end;
+	
+	start = clock();
 
-/**
- * This is the main function. 
- * What it does:
- * 
- *      - Take file input
- *      - Process file input
- *      - Create file output
- *      - Call functions to write to the output file
-*/
-int main(int argc, char const *argv[])
-{
-    char *split;
-    char delim[] = " ";
-    char const* const fileName = argv[1];
-    int processTime, processNum, timeQuantum, col, row = 2, lineCounter = 0;
-    char line [BUFFER_MAX_LENGTH];
-    char *lineArr[BUFFER_MAX_LENGTH];
-    char *splitArr[BUFFER_MAX_LENGTH];
-    char *processArr[BUFFER_MAX_LENGTH];
-    // File input
-    FILE *file;
-    file = fopen("cpu_scheduling_input_file.txt", "r");
-    // Check if the file can be opened
-    if (!file)
-    {
-        fprintf(stderr, "error: could not open textfile: cpu_scheduling_input_file.txt\n");
-        return EXIT_FAILURE;
-    }
-    // File outpout
-    FILE *new_file;
-    new_file = fopen("cpu_scheduling_output_file.txt", "a");
-    // Check if the file can be opened
-    if (!new_file)
-    {
-        fprintf(stderr, "error: could not open textfile: cpu_scheduling_output_file.txt\n");
-        return EXIT_FAILURE;
-    }
-    // Read from the input file line by line, and store them into their own array
-    // e.g. line 1 will store in lineArr[0], line 2 will store in lineArr[1], so on
-    while (fgets(line, sizeof(line), file) != NULL) 
-    {
-        // Dynamically allocate memory of lineCounter size, to each array
-        lineArr[lineCounter] = malloc(sizeof(line));
-        // Copy all elements (including white spaces) of each line to the corresponding array
-        strcpy(lineArr[lineCounter], line);
-        // Increment lineCounter by 1
-        lineCounter++;
-    }
-    printf("\n    Output wrote to cpu_scheduling_output_file.txt \n\n");
-    // This is the most important for loop ever (litrally)
-    // Each line (queue) will enter this loop once
-    // And magic happens, each queue will get processed and send to each queueing functions
-    for (size_t j = 0; j < lineCounter; j++) 
-    {
-        // Count number of P's in one line to determine its number of processes
-        int pCounter = 0;
-        for (size_t k = 0; k < strlen(lineArr[j]); k++) 
-        {
-            if(lineArr[j][k] == 'p')
-            pCounter++;
-        }
-        int splitCounter = 0;
-        // Tokenize the line by white spaces
-        split = strtok (lineArr[j], delim);
-        // Store tokenized string to a *NEW* array, called splitArr
-        while (split != NULL) 
-        {
-            splitArr[splitCounter] = malloc(strlen(lineArr[j]));
-            strcpy(splitArr[splitCounter], split);
-            splitCounter++;
-            split = strtok(NULL, delim);
-        }
-        // Get the time quantum
-        timeQuantum = atoi(splitArr[3]);
-        int proCounter = 0;
-        // For each splitArray, start looping from the 5th position
-        // 5th element is the P1's CUP burst time
-        // Loop through the rest of the splitArr and get every other element.
-        // Store them in a *NEW* array, called processArr
-        for (int p = 5; p < splitCounter; p = p + 2) 
-        {
-            processArr[proCounter] = (char*)malloc(strlen(splitArr[p]) + 1);
-            strcpy(processArr[proCounter], splitArr[p]);
-            proCounter++;
-        }
-        // Calls fcfs() and pass in processArr, proCounte and new_file
-        fprintf(new_file, "Ready Queue %lu Applying FCFS Scheduling:\n\n", j+1);
-        fcfs(processArr, proCounter, new_file);
-        // Calls sjf() and pass in processArr, proCounte and new_file
-        fprintf(new_file, "Ready Queue %zu Applying SJF Scheduling...\n\n", j+1);
-        sjf(processArr, proCounter, new_file);
-        // Calls rr() and pass in processArr, proCounte, time quantum and new_file
-        fprintf(new_file, "Ready Queue %zu Applying RR Scheduling:\n\n", j+1);
-        rr(processArr, proCounter, timeQuantum, new_file);
-    }
-    // Close all files
-    fclose(new_file);
-    fclose(file);
-    return 0;
+	// Check if the process in front of the queue is not considered NULL
+	// Move front process to the end
+	if (tempProcess != NULL) {
+		for (size_t i = 0; i < q->current_size-1; i++) {
+			q->arr[i] = q->arr[i+1];
+		}
+		q->arr[q->rear] = tempProcess;
+	}
+	// Since it's null, dequeue it permanently
+	else {
+		for (size_t i = 0; i < q->current_size-1; i++) {
+			q->arr[i] = q->arr[i+1]; 
+		}
+		q->current_size--;
+		printf("Process has been removed from queue\n");
+	}
+	
+	// Get end clock of when context switch ends...
+	end = clock();
+	
+	// Then assign the difference divided by the clocks per second to the idle time.
+	float val = (float) (end - *start_exec) / CLOCKS_PER_SEC;
+	
+	processor->idle_time += val;
+	printf("Idle time of process is: %d\n", processor->idle_time);
 }
 
+// After the program runs for specified time quantum, check the current state of all processes
+void getCurrentState(Queue *q) {
+	for (size_t i = 0; i < q->current_size; i++) {
+		printf("Process id#: %d | Arrival Time: %d | Burst Time %d\n", q->arr[i]->pid, 
+		q->arr[i]->arrival_time, q->arr[i]->burst_time);
+	}
+}
+
+// Sorts the queue based on the arrival time of the read processes from the csv file
+void sortQueue(Queue *q) {
+	for (size_t i = 0; i < q->current_size; i++) {
+		for (size_t j = 0; j < q->current_size-1; j++) {
+			if (q->arr[j+1]->arrival_time < q->arr[j]->arrival_time) {
+				Process *p = q->arr[j];
+				q->arr[j] = q->arr[j+1];
+				q->arr[j+1] = p;
+			}
+		}
+	}
+}
+
+//--------------------------------------------------------------------------------------------------
+// Methods needed for starting Round Robin CPU Scheduling
+// Process the processes in the ready queue with specified time quantum, etc
+// @returns pointer to process with specified id, arrival time, and burst time
+//--------------------------------------------------------------------------------------------------
+Process *process_pids(unsigned *p_id, unsigned *arrival, unsigned *burst) {
+    Process *p;
+    p = malloc(sizeof(Process));
+    p->pid = *p_id;
+    p->arrival_time = *arrival;
+    p->burst_time = *burst;
+    p->turnaround_time = 0;
+    p->completion_time = 0;
+    p->waiting_time = 0;
+    return p;
+}
+
+// Read csv file and check each character for an int. 
+// that int is then passed to the process in the queue array.
+// @input - file name
+void read_csv(Queue *ready_queue, char *fileName) {
+
+    char c;
+    char c_arr[4];
+    FILE *file; // Pointer to file to be read
+    unsigned pidFound = 0, arrivalTimeFound = 0, burstTimeFound = 0; // Acts as boolean
+    unsigned process_id, arrival_time, burst_time;
+    unsigned index = 0;
+
+    file = fopen(fileName,"r"); // Read the csv file
+
+	// Check if file exists and if it does, continue reading ntil end of file
+	if (file) {
+		while ((c = getc(file)) != EOF) {
+			if (isdigit(c)) {	// Check if character read is a number
+				
+				if (c != ',') {
+					
+					// Read each number and store it after recognizing the ','
+					if (pidFound == 0 && (arrivalTimeFound == burstTimeFound)) {
+						process_id = c - '0';	// Needed to turn read character in a number
+						pidFound = 1;
+					}
+					else if (arrivalTimeFound == 0 && pidFound == 1) {
+						arrival_time = c - '0';
+						arrivalTimeFound = 1;
+					}
+					else if (burstTimeFound == 0 && (arrivalTimeFound == pidFound)) {
+						burst_time = c - '0';
+						burstTimeFound = 1;
+					}
+				}
+			}
+			
+			// Begin enqueueing the processes
+			else if (c == '\n' && (pidFound == 1 && burstTimeFound == 1 && arrivalTimeFound == 1 )) {
+				enqueue(ready_queue, process_pids(&process_id, &arrival_time, &burst_time));
+				pidFound = 0, arrivalTimeFound = 0, burstTimeFound = 0;
+				index++;
+			}
+		}
+		fclose(file);
+	}
+}
+
+// Start Round Robin Scheduling Algorithm
+void start_scheduler(CPU *processor, Queue *ready_queue, unsigned *time_quantum) {
+	Process *newProcess = ready_queue->arr[ready_queue->front];
+	time_t context_switch_start;
+	while (newProcess != NULL) {
+		if (newProcess->burst_time > 0) {
+			printf("Processing...\n");
+			
+			// Run process on CPU
+			newProcess->burst_time = compute_burst_time(newProcess, time_quantum);
+			
+			// Get time at which process finishes running on CPU
+			time_t end_execution = clock() / CLOCKS_PER_SEC;
+
+			printf("\n");
+			
+			// Get time for how long CPU is idle
+			context_switch_start = clock();
+			getCurrentState(ready_queue);
+			printf("\n");
+			printf("Current time in seconds: %.2fs\n", (double) (clock() - processor->total_time_running) / CLOCKS_PER_SEC);
+
+			// Check if the burst time is zero
+			if (newProcess->burst_time == 0) {
+				
+				// Fill in processes' turnaround time, completion time, etc.
+				int execution_time = end_execution - (int) processor->total_time_running;
+				calculate_process_info(newProcess, &execution_time);
+				
+				// If this process had some type of context switch event, add number of context switches
+				// to total amount that occured.
+				if (newProcess->context_switch_count != 0)	
+					processor->total_context_switches += newProcess->context_switch_count;
+					
+				// Add process' waiting time to total waiting time
+				processor->total_waiting_time += newProcess->waiting_time;
+				printf("Current total waiting time: %d\n", processor->total_waiting_time);
+				
+				// Make that item null now
+				ready_queue->arr[ready_queue->front] = NULL;
+			} 
+			else {
+				printf("Context switch...\n");
+				newProcess->context_switch_count += 1;
+			}
+			dequeue(ready_queue, processor, &context_switch_start);
+			printf("Process ran for time quantum of: %d\nOriginal size of the queue was: %d\n"
+			"Current size of the queue is: %d\nAfter dequeue, state of processes looks as follows.\n", 
+			*time_quantum, ready_queue->original_size,check_current_size(ready_queue));
+			getCurrentState(ready_queue);
+			
+			// Set the process equal to whatever is in front now
+			newProcess = ready_queue->arr[ready_queue->front];
+			printf("\n");
+		}
+	}
+}
+
+// This function returns burst time after computing difference between process' burst time and the
+// time quantum itself
+int compute_burst_time(Process *p, unsigned *time_quantum) {
+	for (size_t i = *time_quantum; i > 0; i--) {
+		if (p->burst_time != 0) {
+			p->burst_time -= 1;
+			p->completion_time += 1;
+			printf("Running on CPU... Burst Time Decremented...\n");
+			delay(1000);
+		}
+	}
+	return p->burst_time;
+}
+
+// Return CPU Utilization, average waiting time, throughput, and # of occurances of context switching
+void analysis(CPU *unit, Queue *ready_queue) {
+	// Get end duration of the clock and subtract the end from the beginning to get the total run time
+	time_t end = clock() / CLOCKS_PER_SEC;
+	unit->total_time_running = end - unit->total_time_running;
+	double average_waiting_time = unit->total_waiting_time / ready_queue->original_size;	
+	
+	printf("This took %.2lfs\n", (double)unit->total_time_running);
+	printf("CPU Utilization: %.2f%\n", cpu_maximum_utilization(unit));
+	printf("Average Waiting Time: %.2fs\n", average_waiting_time);
+	printf("Total throughput: %.2f\n", ready_queue->original_size / (double) (unit->total_time_running));	
+	printf("Total amount of context switches: %d\n", unit->total_context_switches);
+}
+
+//--------------------------------------------------------------------------------------------------
+// Simulations Tools
+// * Delay - Allows a small delay depending on input
+//--------------------------------------------------------------------------------------------------
+
+// @input - Amount of milliseconds that it should be delayed for.
+void delay(int ms) {
+    long halt;
+    clock_t current, previous;
+    
+    halt = ms*(CLOCKS_PER_SEC/1000);
+    current = previous = clock();
+    
+    while((current-previous) < halt )
+        current = clock();
+}
+
+int main(int argc, char *argv[]) {
+	
+	// Initialize items in ready_queue to be null, and the variables in CPU to be 0.
+    Queue ready_queue = {NULL};
+    CPU processing_unit = {0, 0, 0, 0 ,0};
+    
+    // Read the argument, which is a csv file.
+    read_csv(&ready_queue, argv[1]);
+    
+    if (argc != 2) {
+		printf("Please input a csv file when running the command ./output [insert file name here]\n");
+		return 0;
+	}
+	sortQueue(&ready_queue);
+	
+	printf("Enter the time quantum of your choice: ");
+	scanf("%d", &time_quantum);
+	printf("Your time quantum is: %d\n", time_quantum);
+	printf("Size is: %d\nProcesses loaded into ready queue:\n", check_current_size(&ready_queue));
+	
+	getCurrentState(&ready_queue);    
+	printf("\n");
+	
+	processing_unit.total_time_running = (int) clock() / CLOCKS_PER_SEC; 
+	start_scheduler(&processing_unit, &ready_queue, &time_quantum);
+	printf("Done processing\n\n");
+	
+	analysis(&processing_unit, &ready_queue);
+}
