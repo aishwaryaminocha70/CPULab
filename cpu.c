@@ -8,7 +8,7 @@ int menu(){
     int choice;
  
     system("cls");
-    printf(CPU SCHEDULER");
+    printf("CPU SCHEDULER");
     printf("\n     Choose the algorithm you want to use to simulate the scheduler. \n");
     printf("\n                  < 1 > Firts-Come, First-Serve (FCFS)");
     printf("\n                  < 2 > Shortest-Job-First- (SRTF) ");
