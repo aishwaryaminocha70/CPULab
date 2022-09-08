@@ -83,4 +83,3 @@ int main()
 	printf("Average turn around time: %f\n",(float)turn_around_time_total/n);
 
 }
-Footer
