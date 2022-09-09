@@ -1,4 +1,4 @@
-#define QUEUEMAX 100
+
 struct PCB {
 int process_id;
 int arrival_timestamp;
